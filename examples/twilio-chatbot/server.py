@@ -8,6 +8,7 @@ from starlette.responses import HTMLResponse
 
 from bot import run_bot
 
+
 app = FastAPI()
 
 app.add_middleware(
@@ -18,11 +19,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.requests import Request
 
 @app.post("/start_call")
-async def start_call():
+async def start_call(request: Request):
     print("POST TwiML")
-    return HTMLResponse(content=open("templates/streams.xml").read(), media_type="application/xml")
+    form = await request.form()
+    from_ = form.get('From')
+    print("from_===>>>>", from_)
+    
+    return HTMLResponse(content=open("/Users/rohit/Downloads/code/pipecat/examples/twilio-chatbot/templates/streams.xml").read(), media_type="application/xml")
 
 
 @app.websocket("/ws")
@@ -38,4 +44,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 if __name__ == "__main__":
+    # import asyncio
+    # from loguru import logger
+    # import bot
+
+    # result = asyncio.run(bot.search_string("I would like to change my address")) 
+    # logger.success(len(result))
+
+
+    # logger.success(f"Search result===>>>> : {result}")
+
+
+
     uvicorn.run(app, host="0.0.0.0", port=8765)

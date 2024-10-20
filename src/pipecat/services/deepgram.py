@@ -112,6 +112,10 @@ class DeepgramTTSService(TTSService):
             logger.exception(f"{self} exception: {e}")
             yield ErrorFrame(f"Error getting audio: {str(e)}")
 
+import os
+import uuid
+import wave
+from io import BytesIO
 
 class DeepgramSTTService(STTService):
     def __init__(
@@ -122,6 +126,10 @@ class DeepgramSTTService(STTService):
         live_options: LiveOptions = None,
         **kwargs,
     ):
+         # ... existing code ...
+        self._audio_buffer = BytesIO()
+        self._current_audio_id = None
+
         super().__init__(**kwargs)
         default_options = LiveOptions(
             encoding="linear16",
@@ -186,6 +194,12 @@ class DeepgramSTTService(STTService):
         await self._disconnect()
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+        if self._current_audio_id is None:
+            self._current_audio_id = str(uuid.uuid4())
+            self._audio_buffer = BytesIO()
+
+        self._audio_buffer.write(audio)
+
         await self._connection.send(audio)
         yield None
 
@@ -217,6 +231,19 @@ class DeepgramSTTService(STTService):
         if len(transcript) > 0:
             await self.stop_ttfb_metrics()
             if is_final:
+                
+                # Save the accumulated audio to a file
+                audio_filename = f"deepgram_audio_{self._current_audio_id}.raw"
+                self._save_wav(audio_filename)
+                logger.info(f"Saved audio to {audio_filename}")
+
+
+                # Reset the audio buffer and ID
+                self._audio_buffer = BytesIO()
+                self._current_audio_id = None
+
+                transcript = 'Customer emotion: Angry \n ' + transcript
+
                 await self.push_frame(
                     TranscriptionFrame(transcript, "", time_now_iso8601(), language)
                 )
@@ -225,3 +252,16 @@ class DeepgramSTTService(STTService):
                 await self.push_frame(
                     InterimTranscriptionFrame(transcript, "", time_now_iso8601(), language)
                 )
+
+    def _save_wav(self, filename: str):
+        sample_width = 2  # 16-bit audio
+        channels = self._settings.get('channels', 1)
+        sample_rate = self._settings.get('sample_rate', 16000)
+
+        with wave.open(filename, 'wb') as wav_file:
+            wav_file.setnchannels(channels)
+            wav_file.setsampwidth(sample_width)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(self._audio_buffer.getvalue())
+
+    # ... existing code ...
