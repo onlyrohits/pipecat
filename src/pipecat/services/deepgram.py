@@ -242,7 +242,7 @@ class DeepgramSTTService(STTService):
                 self._audio_buffer = BytesIO()
                 self._current_audio_id = None
 
-                transcript = 'Customer emotion: Angry \n ' + transcript
+                # transcript = 'Customer emotion: Angry \n ' + transcript
 
                 await self.push_frame(
                     TranscriptionFrame(transcript, "", time_now_iso8601(), language)
