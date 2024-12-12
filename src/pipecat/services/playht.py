@@ -14,7 +14,7 @@ from typing import AsyncGenerator, Optional
 import aiohttp
 import websockets
 from loguru import logger
-from pydantic.main import BaseModel
+from pydantic import BaseModel
 
 from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
@@ -47,23 +47,24 @@ except ModuleNotFoundError as e:
 
 
 def language_to_playht_language(language: Language) -> str | None:
-    language_map = {
+    BASE_LANGUAGES = {
+        Language.AF: "afrikans",
+        Language.AM: "amharic",
+        Language.AR: "arabic",
+        Language.BN: "bengali",
         Language.BG: "bulgarian",
         Language.CA: "catalan",
         Language.CS: "czech",
         Language.DA: "danish",
         Language.DE: "german",
+        Language.EL: "greek",
         Language.EN: "english",
-        Language.EN_US: "english",
-        Language.EN_GB: "english",
-        Language.EN_AU: "english",
-        Language.EN_NZ: "english",
-        Language.EN_IN: "english",
         Language.ES: "spanish",
         Language.FR: "french",
-        Language.FR_CA: "french",
-        Language.EL: "greek",
+        Language.GL: "galician",
+        Language.HE: "hebrew",
         Language.HI: "hindi",
+        Language.HR: "croatian",
         Language.HU: "hungarian",
         Language.ID: "indonesian",
         Language.IT: "italian",
@@ -73,14 +74,30 @@ def language_to_playht_language(language: Language) -> str | None:
         Language.NL: "dutch",
         Language.PL: "polish",
         Language.PT: "portuguese",
-        Language.PT_BR: "portuguese",
         Language.RU: "russian",
+        Language.SQ: "albanian",
+        Language.SR: "serbian",
         Language.SV: "swedish",
         Language.TH: "thai",
+        Language.TL: "tagalog",
         Language.TR: "turkish",
         Language.UK: "ukrainian",
+        Language.UR: "urdu",
+        Language.XH: "xhosa",
+        Language.ZH: "mandarin",
     }
-    return language_map.get(language)
+
+    result = BASE_LANGUAGES.get(language)
+
+    # If not found in base languages, try to find the base language from a variant
+    if not result:
+        # Convert enum value to string and get the base language part (e.g. es-ES -> es)
+        lang_str = str(language.value)
+        base_code = lang_str.split("-")[0].lower()
+        # Look up the base code in our supported languages
+        result = base_code if base_code in BASE_LANGUAGES.values() else None
+
+    return result
 
 
 class PlayHTTTSService(TTSService):
@@ -145,7 +162,22 @@ class PlayHTTTSService(TTSService):
         await self._disconnect()
 
     async def _connect(self):
+        await self._connect_websocket()
+
+        self._receive_task = self.get_event_loop().create_task(self._receive_task_handler())
+
+    async def _disconnect(self):
+        await self._disconnect_websocket()
+
+        if self._receive_task:
+            self._receive_task.cancel()
+            await self._receive_task
+            self._receive_task = None
+
+    async def _connect_websocket(self):
         try:
+            logger.debug("Connecting to PlayHT")
+
             if not self._websocket_url:
                 await self._get_websocket_url()
 
@@ -153,8 +185,6 @@ class PlayHTTTSService(TTSService):
                 raise ValueError("WebSocket URL is not a string")
 
             self._websocket = await websockets.connect(self._websocket_url)
-            self._receive_task = self.get_event_loop().create_task(self._receive_task_handler())
-            logger.debug("Connected to TTS WebSocket")
         except ValueError as ve:
             logger.error(f"{self} initialization error: {ve}")
             self._websocket = None
@@ -162,18 +192,14 @@ class PlayHTTTSService(TTSService):
             logger.error(f"{self} initialization error: {e}")
             self._websocket = None
 
-    async def _disconnect(self):
+    async def _disconnect_websocket(self):
         try:
             await self.stop_all_metrics()
 
             if self._websocket:
+                logger.debug("Disconnecting from PlayHT")
                 await self._websocket.close()
                 self._websocket = None
-
-            if self._receive_task:
-                self._receive_task.cancel()
-                await self._receive_task
-                self._receive_task = None
 
             self._request_id = None
         except Exception as e:
@@ -209,31 +235,34 @@ class PlayHTTTSService(TTSService):
         self._request_id = None
 
     async def _receive_task_handler(self):
-        try:
-            async for message in self._get_websocket():
-                if isinstance(message, bytes):
-                    # Skip the WAV header message
-                    if message.startswith(b"RIFF"):
-                        continue
-                    await self.stop_ttfb_metrics()
-                    frame = TTSAudioRawFrame(message, self._settings["sample_rate"], 1)
-                    await self.push_frame(frame)
-                else:
-                    logger.debug(f"Received text message: {message}")
-                    try:
-                        msg = json.loads(message)
-                        if "request_id" in msg and msg["request_id"] == self._request_id:
-                            await self.push_frame(TTSStoppedFrame())
-                            self._request_id = None
-                        elif "error" in msg:
-                            logger.error(f"{self} error: {msg}")
-                            await self.push_error(ErrorFrame(f'{self} error: {msg["error"]}'))
-                    except json.JSONDecodeError:
-                        logger.error(f"Invalid JSON message: {message}")
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"{self} exception in receive task: {e}")
+        while True:
+            try:
+                async for message in self._get_websocket():
+                    if isinstance(message, bytes):
+                        # Skip the WAV header message
+                        if message.startswith(b"RIFF"):
+                            continue
+                        await self.stop_ttfb_metrics()
+                        frame = TTSAudioRawFrame(message, self._settings["sample_rate"], 1)
+                        await self.push_frame(frame)
+                    else:
+                        logger.debug(f"Received text message: {message}")
+                        try:
+                            msg = json.loads(message)
+                            if "request_id" in msg and msg["request_id"] == self._request_id:
+                                await self.push_frame(TTSStoppedFrame())
+                                self._request_id = None
+                            elif "error" in msg:
+                                logger.error(f"{self} error: {msg}")
+                                await self.push_error(ErrorFrame(f'{self} error: {msg["error"]}'))
+                        except json.JSONDecodeError:
+                            logger.error(f"Invalid JSON message: {message}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"{self} exception in receive task: {e}")
+                await self._disconnect_websocket()
+                await self._connect_websocket()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -381,4 +410,4 @@ class PlayHTHttpTTSService(TTSService):
                         yield frame
             yield TTSStoppedFrame()
         except Exception as e:
-            logger.exception(f"{self} error generating TTS: {e}")
+            logger.error(f"{self} error generating TTS: {e}")

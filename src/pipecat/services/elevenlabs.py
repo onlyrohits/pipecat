@@ -43,45 +43,52 @@ ElevenLabsOutputFormat = Literal["pcm_16000", "pcm_22050", "pcm_24000", "pcm_441
 
 
 def language_to_elevenlabs_language(language: Language) -> str | None:
-    language_map = {
+    BASE_LANGUAGES = {
+        Language.AR: "ar",
         Language.BG: "bg",
-        Language.ZH: "zh",
         Language.CS: "cs",
         Language.DA: "da",
-        Language.NL: "nl",
-        Language.EN: "en",
-        Language.EN_US: "en",
-        Language.EN_AU: "en",
-        Language.EN_GB: "en",
-        Language.EN_NZ: "en",
-        Language.EN_IN: "en",
-        Language.FI: "fi",
-        Language.FR: "fr",
-        Language.FR_CA: "fr",
         Language.DE: "de",
-        Language.DE_CH: "de",
         Language.EL: "el",
+        Language.EN: "en",
+        Language.ES: "es",
+        Language.FI: "fi",
+        Language.FIL: "fil",
+        Language.FR: "fr",
         Language.HI: "hi",
+        Language.HR: "hr",
         Language.HU: "hu",
         Language.ID: "id",
         Language.IT: "it",
         Language.JA: "ja",
         Language.KO: "ko",
         Language.MS: "ms",
+        Language.NL: "nl",
         Language.NO: "no",
         Language.PL: "pl",
-        Language.PT: "pt-PT",
-        Language.PT_BR: "pt-BR",
+        Language.PT: "pt",
         Language.RO: "ro",
         Language.RU: "ru",
         Language.SK: "sk",
-        Language.ES: "es",
         Language.SV: "sv",
+        Language.TA: "ta",
         Language.TR: "tr",
         Language.UK: "uk",
         Language.VI: "vi",
+        Language.ZH: "zh",
     }
-    return language_map.get(language)
+
+    result = BASE_LANGUAGES.get(language)
+
+    # If not found in base languages, try to find the base language from a variant
+    if not result:
+        # Convert enum value to string and get the base language part (e.g. es-ES -> es)
+        lang_str = str(language.value)
+        base_code = lang_str.split("-")[0].lower()
+        # Look up the base code in our supported languages
+        result = base_code if base_code in BASE_LANGUAGES.values() else None
+
+    return result
 
 
 def sample_rate_from_output_format(output_format: str) -> int:
@@ -278,7 +285,28 @@ class ElevenLabsTTSService(WordTTSService):
             await self.resume_processing_frames()
 
     async def _connect(self):
+        await self._connect_websocket()
+
+        self._receive_task = self.get_event_loop().create_task(self._receive_task_handler())
+        self._keepalive_task = self.get_event_loop().create_task(self._keepalive_task_handler())
+
+    async def _disconnect(self):
+        if self._receive_task:
+            self._receive_task.cancel()
+            await self._receive_task
+            self._receive_task = None
+
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            await self._keepalive_task
+            self._keepalive_task = None
+
+        await self._disconnect_websocket()
+
+    async def _connect_websocket(self):
         try:
+            logger.debug("Connecting to ElevenLabs")
+
             voice_id = self._voice_id
             model = self.model_name
             output_format = self._settings["output_format"]
@@ -297,8 +325,6 @@ class ElevenLabsTTSService(WordTTSService):
                 )
 
             self._websocket = await websockets.connect(url)
-            self._receive_task = self.get_event_loop().create_task(self._receive_task_handler())
-            self._keepalive_task = self.get_event_loop().create_task(self._keepalive_task_handler())
 
             # According to ElevenLabs, we should always start with a single space.
             msg: Dict[str, Any] = {
@@ -312,49 +338,42 @@ class ElevenLabsTTSService(WordTTSService):
             logger.error(f"{self} initialization error: {e}")
             self._websocket = None
 
-    async def _disconnect(self):
+    async def _disconnect_websocket(self):
         try:
             await self.stop_all_metrics()
 
             if self._websocket:
+                logger.debug("Disconnecting from ElevenLabs")
                 await self._websocket.send(json.dumps({"text": ""}))
                 await self._websocket.close()
                 self._websocket = None
-
-            if self._receive_task:
-                self._receive_task.cancel()
-                await self._receive_task
-                self._receive_task = None
-
-            if self._keepalive_task:
-                self._keepalive_task.cancel()
-                await self._keepalive_task
-                self._keepalive_task = None
 
             self._started = False
         except Exception as e:
             logger.error(f"{self} error closing websocket: {e}")
 
     async def _receive_task_handler(self):
-        try:
-            async for message in self._websocket:
-                msg = json.loads(message)
-                if msg.get("audio"):
-                    await self.stop_ttfb_metrics()
-                    self.start_word_timestamps()
+        while True:
+            try:
+                async for message in self._websocket:
+                    msg = json.loads(message)
+                    if msg.get("audio"):
+                        await self.stop_ttfb_metrics()
+                        self.start_word_timestamps()
 
-                    audio = base64.b64decode(msg["audio"])
-                    frame = TTSAudioRawFrame(audio, self._settings["sample_rate"], 1)
-                    await self.push_frame(frame)
-
-                if msg.get("alignment"):
-                    word_times = calculate_word_times(msg["alignment"], self._cumulative_time)
-                    await self.add_word_timestamps(word_times)
-                    self._cumulative_time = word_times[-1][1]
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"{self} exception: {e}")
+                        audio = base64.b64decode(msg["audio"])
+                        frame = TTSAudioRawFrame(audio, self._settings["sample_rate"], 1)
+                        await self.push_frame(frame)
+                    if msg.get("alignment"):
+                        word_times = calculate_word_times(msg["alignment"], self._cumulative_time)
+                        await self.add_word_timestamps(word_times)
+                        self._cumulative_time = word_times[-1][1]
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"{self} exception: {e}")
+                await self._disconnect_websocket()
+                await self._connect_websocket()
 
     async def _keepalive_task_handler(self):
         while True:

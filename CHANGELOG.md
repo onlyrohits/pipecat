@@ -5,18 +5,185 @@ All notable changes to **Pipecat** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
 
 ### Added
 
+- Add support for more languages to ElevenLabs (Arabic, Croatian, Filipino,
+  Tamil) and PlayHT (Afrikans, Albanian, Amharic, Arabic, Bengali, Croatian,
+  Galician, Hebrew, Mandarin, Serbian, Tagalog, Urdu, Xhosa).
+
+### Deprecated
+
+- `AWSTTSService` is now deprecated, use `PollyTTSService` instead.
+
+## [0.0.50] - 2024-12-11
+
+### Added
+
+- Added `GeminiMultimodalLiveLLMService`. This is an integration for Google's
+  Gemini Multimodal Live API, supporting:
+
+  - Real-time audio and video input processing
+  - Streaming text responses with TTS
+  - Audio transcription for both user and bot speech
+  - Function calling
+  - System instructions and context management
+  - Dynamic parameter updates (temperature, top_p, etc.)
+
+- Added `AudioTranscriber` utility class for handling audio transcription with
+  Gemini models.
+
+- Added new context classes for Gemini:
+
+  - `GeminiMultimodalLiveContext`
+  - `GeminiMultimodalLiveUserContextAggregator`
+  - `GeminiMultimodalLiveAssistantContextAggregator`
+  - `GeminiMultimodalLiveContextAggregatorPair`
+
+- Added new foundational examples for `GeminiMultimodalLiveLLMService`:
+
+  - `26-gemini-multimodal-live.py`
+  - `26a-gemini-multimodal-live-transcription.py`
+  - `26b-gemini-multimodal-live-video.py`
+  - `26c-gemini-multimodal-live-video.py`
+
+- Added `SimliVideoService`. This is an integration for Simli AI avatars.
+  (see https://www.simli.com)
+
+- Added NVIDIA Riva's `FastPitchTTSService` and `ParakeetSTTService`.
+  (see https://www.nvidia.com/en-us/ai-data-science/products/riva/)
+
+- Added `IdentityFilter`. This is the simplest frame filter that lets through
+  all incoming frames.
+
+- New `STTMuteStrategy` called `FUNCTION_CALL` which mutes the STT service
+  during LLM function calls.
+
+- `DeepgramSTTService` now exposes two event handlers `on_speech_started` and
+  `on_utterance_end` that could be used to implement interruptions. See new
+  example `examples/foundational/07c-interruptible-deepgram-vad.py`.
+
+- Added `GroqLLMService`, `GrokLLMService`, and `NimLLMService` for Groq, Grok,
+  and NVIDIA NIM API integration, with an OpenAI-compatible interface.
+
+- New examples demonstrating function calling with Groq, Grok, Azure OpenAI,
+  Fireworks, and NVIDIA NIM: `14f-function-calling-groq.py`,
+  `14g-function-calling-grok.py`, `14h-function-calling-azure.py`,
+  `14i-function-calling-fireworks.py`, and `14j-function-calling-nvidia.py`.
+
+- In order to obtain the audio stored by the `AudioBufferProcessor` you can now
+  also register an `on_audio_data` event handler. The `on_audio_data` handler
+  will be called every time `buffer_size` (a new constructor argument) is
+  reached. If `buffer_size` is 0 (default) you need to manually get the audio as
+  before using `AudioBufferProcessor.merge_audio_buffers()`.
+
+```
+@audiobuffer.event_handler("on_audio_data")
+async def on_audio_data(processor, audio, sample_rate, num_channels):
+    await save_audio(audio, sample_rate, num_channels)
+```
+
+- Added a new RTVI message called `disconnect-bot`, which when handled pushes
+  an `EndFrame` to trigger the pipeline to stop.
+
+### Changed
+
+- `STTMuteFilter` now supports multiple simultaneous muting strategies.
+
+- `XTTSService` language now defaults to `Language.EN`.
+
+- `SoundfileMixer` doesn't resample input files anymore to avoid startup
+  delays. The sample rate of the provided sound files now need to match the
+  sample rate of the output transport.
+
+- Input frames (audio, image and transport messages) are now system frames. This
+  means they are processed immediately by all processors instead of being queued
+  internally.
+
+- Expanded the transcriptions.language module to support a superset of
+  languages.
+
+- Updated STT and TTS services with language options that match the supported
+  languages for each service.
+
+- Updated the `AzureLLMService` to use the `OpenAILLMService`. Updated the
+  `api_version` to `2024-09-01-preview`.
+
+- Updated the `FireworksLLMService` to use the `OpenAILLMService`. Updated the
+  default model to `accounts/fireworks/models/firefunction-v2`.
+
+- Updated the `simple-chatbot` example to include a Javascript and React client
+  example, using RTVI JS and React.
+
+### Removed
+
+- Removed `AppFrame`. This was used as a special user custom frame, but there's
+  actually no use case for that.
+
+### Fixed
+
+- Fixed a `ParallelPipeline` issue that would cause system frames to be queued.
+
+- Fixed `FastAPIWebsocketTransport` so it can work with binary data (e.g. using
+  the protobuf serializer).
+
+- Fixed an issue in `CartesiaTTSService` that could cause previous audio to be
+  received after an interruption.
+
+- Fixed Cartesia, ElevenLabs, LMNT and PlayHT TTS websocket
+  reconnection. Before, if an error occurred no reconnection was happening.
+
+- Fixed a `BaseOutputTransport` issue that was causing audio to be discarded
+  after an `EndFrame` was received.
+
+- Fixed an issue in `WebsocketServerTransport` and `FastAPIWebsocketTransport`
+  that would cause a busy loop when using audio mixer.
+
+- Fixed a `DailyTransport` and `LiveKitTransport` issue where connections were
+  being closed in the input transport prematurely. This was causing frames
+  queued inside the pipeline being discarded.
+
+- Fixed an issue in `DailyTransport` that would cause some internal callbacks to
+  not be executed.
+
+- Fixed an issue where other frames were being processed while a `CancelFrame`
+  was being pushed down the pipeline.
+
+- `AudioBufferProcessor` now handles interruptions properly.
+
+- Fixed a `WebsocketServerTransport` issue that would prevent interruptions with
+  `TwilioSerializer` from working.
+
+- `DailyTransport.capture_participant_video` now allows capturing user's screen
+  share by simply passing `video_source="screenVideo"`.
+
+- Fixed Google Gemini message handling to properly convert appended messages to
+  Gemini's required format.
+
+- Fixed an issue with `FireworksLLMService` where chat completions were failing
+  by removing the `stream_options` from the chat completion options.
+
+## [0.0.49] - 2024-11-17
+
+### Added
+
+- Added RTVI `on_bot_started` event which is useful in a single turn
+  interaction.
+
+- Added `DailyTransport` events `dialin-connected`, `dialin-stopped`,
+  `dialin-error` and `dialin-warning`. Needs daily-python >= 0.13.0.
+
 - Added `RimeHttpTTSService` and the `07q-interruptible-rime.py` foundational
   example.
+
 - Added `STTMuteFilter`, a general-purpose processor that combines STT
   muting and interruption control. When active, it prevents both transcription
   and interruptions during bot speech. The processor supports multiple
   strategies: `FIRST_SPEECH` (mute only during bot's first
   speech), `ALWAYS` (mute during all bot speech), or `CUSTOM` (using provided
   callback).
+
 - Added `STTMuteFrame`, a control frame that enables/disables speech
   transcription in STT services.
 

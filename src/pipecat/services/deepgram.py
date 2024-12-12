@@ -35,7 +35,6 @@ try:
         LiveResultResponse,
         LiveTranscriptionEvents,
         SpeakOptions,
-        logging,
     )
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
@@ -159,7 +158,10 @@ class DeepgramSTTService(STTService):
         self._connection: AsyncListenWebSocketClient = self._client.listen.asyncwebsocket.v("1")
         self._connection.on(LiveTranscriptionEvents.Transcript, self._on_message)
         if self.vad_enabled:
+            self._register_event_handler("on_speech_started")
+            self._register_event_handler("on_utterance_end")
             self._connection.on(LiveTranscriptionEvents.SpeechStarted, self._on_speech_started)
+            self._connection.on(LiveTranscriptionEvents.UtteranceEnd, self._on_utterance_end)
 
     @property
     def vad_enabled(self):
@@ -204,19 +206,22 @@ class DeepgramSTTService(STTService):
         yield None
 
     async def _connect(self):
-        if await self._connection.start(self._settings):
-            logger.info(f"{self}: Connected to Deepgram")
-        else:
-            logger.error(f"{self}: Unable to connect to Deepgram")
+        logger.debug("Connecting to Deepgram")
+        if not await self._connection.start(self._settings):
+            logger.error(f"{self}: unable to connect to Deepgram")
 
     async def _disconnect(self):
         if self._connection.is_connected:
+            logger.debug("Disconnecting from Deepgram")
             await self._connection.finish()
-            logger.info(f"{self}: Disconnected from Deepgram")
 
     async def _on_speech_started(self, *args, **kwargs):
         await self.start_ttfb_metrics()
         await self.start_processing_metrics()
+        await self._call_event_handler("on_speech_started", *args, **kwargs)
+
+    async def _on_utterance_end(self, *args, **kwargs):
+        await self._call_event_handler("on_utterance_end", *args, **kwargs)
 
     async def _on_message(self, *args, **kwargs):
         result: LiveResultResponse = kwargs["result"]
